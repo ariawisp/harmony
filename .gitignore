@@ -22,7 +22,8 @@ lib64/
 parts/
 sdist/
 var/
-include/
+include/*
+!include/openai_harmony.h
 man/
 venv/
 *.egg-info/

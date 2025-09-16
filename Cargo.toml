@@ -8,7 +8,7 @@ description = "OpenAI's response format for its open-weight model series gpt-oss
 
 [lib]
 name = "openai_harmony"
-crate-type = ["rlib", "cdylib"]
+crate-type = ["rlib", "cdylib", "staticlib"]
 
 [features]
 default = []

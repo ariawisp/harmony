@@ -127,6 +127,29 @@ fn main() -> anyhow::Result<()> {
 }
 ```
 
+### C / C++ / Objective-C / Swift
+
+[Read the C binding guide](./docs/c.md)
+
+```c
+#include "openai_harmony.h"
+
+int main(void) {
+    HarmonyEncodingHandle *enc = NULL;
+    char *error = NULL;
+    if (harmony_encoding_new("harmony_gpt_oss", &enc, &error) != HARMONY_STATUS_OK) {
+        return 1;
+    }
+    HarmonyOwnedU32Array tokens;
+    const char *conversation = "{\"messages\":[]}";
+    if (harmony_encoding_render_conversation(enc, conversation, NULL, &tokens, &error) == HARMONY_STATUS_OK) {
+        harmony_owned_u32_array_free(tokens);
+    }
+    harmony_encoding_free(enc);
+    harmony_string_free(error);
+}
+```
+
 ## Contributing
 
 The majority of the rendering and parsing is built in Rust for performance and exposed to Python
