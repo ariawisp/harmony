@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+mod c_api;
 pub mod chat;
 mod encoding;
 mod registry;
