@@ -244,6 +244,9 @@ pub struct HarmonyStreamableParserHandle {
     last_messages_len: usize,
     pending_tool_args_done: Option<String>,
     pending_stop: bool,
+    // Tool call tracking
+    call_seq: u64,
+    current_call_id: Option<String>,
 }
 
 #[repr(C)]
@@ -1613,6 +1616,8 @@ pub extern "C" fn harmony_streamable_parser_new(
                 last_messages_len: 0,
                 pending_tool_args_done: None,
                 pending_stop: false,
+                call_seq: 0,
+                current_call_id: None,
             }));
         }
         Ok(())
@@ -1942,10 +1947,19 @@ pub extern "C" fn harmony_streamable_parser_next_event(
         // Tool begin: recipient changed from None/other -> Some
         if recipient.is_some() && recipient != parser_handle.last_recipient {
             parser_handle.last_recipient = recipient.clone();
+            // Allocate a new call_id for this tool call
+            parser_handle.call_seq = parser_handle.call_seq.wrapping_add(1);
+            let call_id = format!("call-{}", parser_handle.call_seq);
+            parser_handle.current_call_id = Some(call_id.clone());
             unsafe {
                 (*out_event).kind = HarmonyStreamEventKind::ToolCallBegin as i32;
                 if let Some(ch) = channel { (*out_event).channel = to_owned_c_string(ch); }
                 if let Some(rc) = recipient { (*out_event).recipient = to_owned_c_string(rc); }
+                (*out_event).call_id = to_owned_c_string(call_id);
+                // For convenience, mirror recipient into name when available
+                if let Some(rc) = parser_handle.last_recipient.clone() {
+                    (*out_event).name = to_owned_c_string(rc);
+                }
             }
             return Ok(());
         }
@@ -1957,6 +1971,9 @@ pub extern "C" fn harmony_streamable_parser_next_event(
                     (*out_event).channel = to_owned_c_string(ch);
                     if let Some(rc) = recipient { (*out_event).recipient = to_owned_c_string(rc); }
                     (*out_event).json = to_owned_c_string(d);
+                    if let Some(id) = parser_handle.current_call_id.clone() {
+                        (*out_event).call_id = to_owned_c_string(id);
+                    }
                 }
                 return Ok(());
             }
@@ -1978,7 +1995,12 @@ pub extern "C" fn harmony_streamable_parser_next_event(
                 (*out_event).kind = HarmonyStreamEventKind::ToolArgsDone as i32;
                 if let Some(ch) = channel.clone() { (*out_event).channel = to_owned_c_string(ch); }
                 (*out_event).recipient = to_owned_c_string(rc);
+                if let Some(id) = parser_handle.current_call_id.clone() {
+                    (*out_event).call_id = to_owned_c_string(id);
+                }
             }
+            // Clear current_call_id after DONE
+            parser_handle.current_call_id = None;
             return Ok(());
         }
         // Emit pending STOP if any
