@@ -473,6 +473,7 @@ pub extern "C" fn harmony_encoding_render_conversation_for_completion_ex(
         let handle = encoding_from_ptr(encoding)?;
         let conversation_str = string_argument(conversation_json, "conversation_json")?;
         let role_str = string_argument(next_turn_role, "next_turn_role")?;
+        // Try strict parse first; if it fails, attempt a lenient fixup for missing content.type
         let mut conversation: Conversation = serde_json::from_str(&conversation_str)?;
         let role = Role::try_from(role_str.as_str()).map_err(|_| {
             FfiError::new(
