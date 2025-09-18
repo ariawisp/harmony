@@ -283,7 +283,7 @@ impl Encoding {
                 ("<|reserved_200010|>", 200010),
                 ("<|reserved_200011|>", 200011),
                 ("<|call|>", 200012),
-                ("<|reserved_200013|>", 200013),
+                ("<|refusal|>", 200013),
             ],
             Self::Cl100kBase => &[
                 ("<|endoftext|>", 100257),

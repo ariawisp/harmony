@@ -347,7 +347,7 @@ impl HarmonyEncoding {
         Ok(encoded[0])
     }
 
-    fn render_formatting_token_into<B>(
+    pub(crate) fn render_formatting_token_into<B>(
         &self,
         t: FormattingToken,
         into: &mut B,
@@ -360,7 +360,7 @@ impl HarmonyEncoding {
         Ok(())
     }
 
-    fn render_text_into<T, B>(&self, text: T, into: &mut B) -> anyhow::Result<()>
+    pub(crate) fn render_text_into<T, B>(&self, text: T, into: &mut B) -> anyhow::Result<()>
     where
         T: AsRef<str>,
         B: Extend<Rank>,

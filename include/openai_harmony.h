@@ -54,6 +54,21 @@ typedef struct HarmonyStringArray {
     size_t len;
 } HarmonyStringArray;
 
+/** C representation of a message with textual contents only. */
+typedef struct HarmonyMessage {
+    const char *role;          /** required: "system", "developer", "user", "assistant", or tool role */
+    const char *name;          /** optional: tool name when role==tool */
+    const char *recipient;     /** optional: e.g., "assistant" or "functions.get_weather" */
+    const char *channel;       /** optional: "analysis", "commentary", "final" */
+    const char *content_type;  /** optional */
+    HarmonyStringArray contents; /** array of UTF-8 strings; each becomes a text content block */
+} HarmonyMessage;
+
+typedef struct HarmonyMessageArray {
+    HarmonyMessage *data;
+    size_t len;
+} HarmonyMessageArray;
+
 HarmonyStatus harmony_encoding_new(const char *name, HarmonyEncodingHandle **out_encoding, char **out_error);
 void harmony_encoding_free(HarmonyEncodingHandle *handle);
 HarmonyStatus harmony_encoding_name(const HarmonyEncodingHandle *encoding, char **out_name, char **out_error);
@@ -62,6 +77,28 @@ HarmonyStatus harmony_encoding_render_conversation_for_completion(
     const char *conversation_json,
     const char *next_turn_role,
     const HarmonyRenderConversationConfig *config,
+    HarmonyOwnedU32Array *out_tokens,
+    char **out_error);
+
+/** Optional completion options for extended rendering. */
+typedef struct HarmonyCompletionOptions {
+    /** When true, the parser should prefer emitting only 'final' channel deltas. */
+    bool final_only_deltas;
+    /** When true, the parser should ignore premature stops until a final/tool event occurred. */
+    bool guarded_stop;
+    /** When true, pre-fill the next assistant header with channel=final before sampling. */
+    bool force_next_channel_final;
+    /** Optional JSON-encoded tool registry (names + JSON schema). */
+    const char *tools_json;
+} HarmonyCompletionOptions;
+
+/** Extended variant that accepts additional completion options. */
+HarmonyStatus harmony_encoding_render_conversation_for_completion_ex(
+    const HarmonyEncodingHandle *encoding,
+    const char *conversation_json,
+    const char *next_turn_role,
+    const HarmonyRenderConversationConfig *config,
+    const HarmonyCompletionOptions *options,
     HarmonyOwnedU32Array *out_tokens,
     char **out_error);
 HarmonyStatus harmony_encoding_render_conversation(
@@ -80,6 +117,35 @@ HarmonyStatus harmony_encoding_render(
     const HarmonyEncodingHandle *encoding,
     const char *message_json,
     const HarmonyRenderOptions *options,
+    HarmonyOwnedU32Array *out_tokens,
+    char **out_error);
+
+/** Convenience: render a system + user conversation without JSON. */
+HarmonyStatus harmony_encoding_render_system_and_user_for_completion_ex(
+    const HarmonyEncodingHandle *encoding,
+    const char *system_text,                 /** optional, may be NULL */
+    const HarmonyStringArray *user_parts,    /** array of UTF-8 strings */
+    const char *next_turn_role,              /** e.g., "assistant" */
+    const HarmonyRenderConversationConfig *config,
+    const HarmonyCompletionOptions *options,
+    HarmonyOwnedU32Array *out_tokens,
+    char **out_error);
+
+/** Convenience: render a single tool message (role=tool, to=assistant, channel=commentary). */
+HarmonyStatus harmony_encoding_render_tool_message(
+    const HarmonyEncodingHandle *encoding,
+    const char *tool_name,
+    const char *output_text,
+    HarmonyOwnedU32Array *out_tokens,
+    char **out_error);
+
+/** Render a conversation from an array of messages (text-only contents) and append next turn role. */
+HarmonyStatus harmony_encoding_render_conversation_from_messages_ex(
+    const HarmonyEncodingHandle *encoding,
+    const HarmonyMessageArray *messages,
+    const char *next_turn_role,
+    const HarmonyRenderConversationConfig *config,
+    const HarmonyCompletionOptions *options,
     HarmonyOwnedU32Array *out_tokens,
     char **out_error);
 HarmonyStatus harmony_encoding_parse_messages_from_completion_tokens(
@@ -171,6 +237,46 @@ HarmonyStatus harmony_streamable_parser_current_channel(
     const HarmonyStreamableParserHandle *parser,
     char **out_channel,
     char **out_error);
+
+/**
+ * Stream event kinds emitted by the parser.
+ *
+ * NONE indicates no event is currently available.
+ */
+typedef enum HarmonyStreamEventKind {
+    HARMONY_STREAM_EVENT_NONE = 0,
+    HARMONY_STREAM_EVENT_CONTENT_DELTA = 1,
+    HARMONY_STREAM_EVENT_TOOL_CALL_BEGIN = 2,
+    HARMONY_STREAM_EVENT_TOOL_ARGS_DELTA = 3,
+    HARMONY_STREAM_EVENT_TOOL_ARGS_DONE = 4,
+    HARMONY_STREAM_EVENT_STOP = 5,
+} HarmonyStreamEventKind;
+
+/** Owned stream event with heap-allocated strings to be freed by harmony_stream_event_free. */
+typedef struct HarmonyStreamEvent {
+    int kind;          /** HarmonyStreamEventKind */
+    char *channel;     /** optional */
+    char *recipient;   /** optional */
+    char *name;        /** optional tool name */
+    char *call_id;     /** optional tool call id */
+    char *text;        /** content delta text (for CONTENT_DELTA) */
+    char *json;        /** JSON delta (for TOOL_ARGS_DELTA) */
+} HarmonyStreamEvent;
+
+/** Pull the next available event from the parser (or NONE if none available). */
+HarmonyStatus harmony_streamable_parser_next_event(
+    HarmonyStreamableParserHandle *parser,
+    HarmonyStreamEvent *out_event,
+    char **out_error);
+
+/** Prime the parser for the next assistant turn with channel=final so that
+ *  subsequent tokens are parsed as final content. */
+HarmonyStatus harmony_streamable_parser_prime_assistant_final(
+    HarmonyStreamableParserHandle *parser,
+    char **out_error);
+
+/** Free any heap-allocated fields inside the event structure. */
+void harmony_stream_event_free(HarmonyStreamEvent *ev);
 
 void harmony_string_free(char *ptr);
 void harmony_owned_u32_array_free(HarmonyOwnedU32Array array);
