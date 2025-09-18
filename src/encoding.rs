@@ -1194,6 +1194,25 @@ impl StreamableParser {
         Ok(self)
     }
 
+    /// Prime the parser to expect assistant's next turn with channel="final" and no recipient.
+    ///
+    /// This transitions the internal state directly to `Content` with an empty content buffer,
+    /// without feeding any formatting tokens. It avoids ambiguity that can arise when rendering
+    /// header tokens (e.g., including "<|start|>" inside the header buffer) and ensures the
+    /// parser will interpret the next tokens as final-channel content.
+    pub fn prime_assistant_final(&mut self) -> anyhow::Result<&mut Self> {
+        let header = ParsedHeader {
+            author: Author { role: Role::Assistant, name: None },
+            recipient: None,
+            channel: Some("final".to_string()),
+            content_type: None,
+        };
+        self.next_role = None;
+        self.last_content_delta = None;
+        self.state = StreamState::Content { header, content_tokens: Vec::new() };
+        Ok(self)
+    }
+
     fn parse_header_from_tokens(
         &self,
         header_tokens: &[Rank],
@@ -1360,6 +1379,11 @@ impl StreamableParser {
     /// Decode the last content delta if available.
     pub fn last_content_delta(&self) -> anyhow::Result<Option<String>> {
         Ok(self.last_content_delta.clone())
+    }
+
+    /// Take (and clear) the last content delta.
+    pub fn take_last_content_delta(&mut self) -> anyhow::Result<Option<String>> {
+        Ok(self.last_content_delta.take())
     }
 
     /// Consume the parser and return all parsed messages.

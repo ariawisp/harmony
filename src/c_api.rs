@@ -567,6 +567,7 @@ pub extern "C" fn harmony_encoding_render_conversation_for_completion_ex(
             .collect();
         if let Some(o) = opts {
             if o.force_next_channel_final {
+                // Append only the remaining header atoms: <|channel|>final<|message|>
                 handle
                     .inner
                     .render_formatting_token_into(FormattingToken::Channel, &mut tokens)
@@ -581,6 +582,128 @@ pub extern "C" fn harmony_encoding_render_conversation_for_completion_ex(
                     .map_err(|e| FfiError::new(HarmonyStatus::InternalError, e.to_string()))?;
             }
         }
+        unsafe { *out_tokens = vec_to_u32_array(tokens) };
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn harmony_encoding_render_conversation_for_completion_and_prime_ex(
+    encoding: *const HarmonyEncodingHandle,
+    conversation_json: *const c_char,
+    next_turn_role: *const c_char,
+    config: *const HarmonyRenderConversationConfig,
+    options: *const HarmonyCompletionOptions,
+    parser: *mut HarmonyStreamableParserHandle,
+    out_tokens: *mut HarmonyOwnedU32Array,
+    out_error: *mut *mut c_char,
+) -> HarmonyStatus {
+    if let Err(err) = ensure_out_ptr(out_tokens, "out_tokens") {
+        store_error(out_error, Some(err.message));
+        return err.status;
+    }
+    unsafe { (*out_tokens).data = ptr::null_mut(); (*out_tokens).len = 0; }
+
+    catch_unwind_result(out_error, || {
+        let handle = encoding_from_ptr(encoding)?;
+        let conversation_str = string_argument(conversation_json, "conversation_json")?;
+        let role_str = string_argument(next_turn_role, "next_turn_role")?;
+        let mut conversation: Conversation = serde_json::from_str(&conversation_str)?;
+        let role = Role::try_from(role_str.as_str()).map_err(|_| {
+            FfiError::new(HarmonyStatus::InvalidArgument, format!("unknown role: {role_str}"))
+        })?;
+
+        let mut config_owned = map_conversation_config(config);
+        // Ensure default system message to activate channel config
+        conversation
+            .messages
+            .insert(0, Message::from_role_and_content(Role::System, SystemContent::new()));
+
+        let opts = unsafe { options.as_ref().copied() };
+        if let Some(o) = opts {
+            if o.final_only_deltas {
+                let dev_msg = Message::from_role_and_content(
+                    Role::Developer,
+                    DeveloperContent::new().with_instructions(
+                        "You are a helpful assistant. Produce exactly one assistant message in the final channel for the user. Do not reveal analysis or commentary to the user.",
+                    ),
+                );
+                let mut new_msgs = Vec::<Message>::new();
+                let mut inserted = false;
+                for m in conversation.messages.iter() {
+                    if !inserted && m.author.role != Role::System {
+                        new_msgs.push(dev_msg.clone());
+                        inserted = true;
+                    }
+                    new_msgs.push(m.clone());
+                }
+                if !inserted { new_msgs.push(dev_msg); }
+                conversation.messages = new_msgs;
+            }
+            if !o.tools_json.is_null() {
+                if let Ok(tools_str) = string_argument(o.tools_json, "tools_json") {
+                    if let Ok(root) = serde_json::from_str::<serde_json::Value>(&tools_str) {
+                        let ns = root.get("namespace").and_then(|v| v.as_str()).unwrap_or("functions").to_string();
+                        let mut tool_descs: Vec<ToolDescription> = Vec::new();
+                        if let Some(arr) = root.get("tools").and_then(|v| v.as_array()) {
+                            for t in arr {
+                                let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                                if name.is_empty() { continue; }
+                                let params = t.get("json_schema").cloned();
+                                let desc = t.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                tool_descs.push(ToolDescription::new(name, desc, params));
+                            }
+                        }
+                        if !tool_descs.is_empty() {
+                            let dev = DeveloperContent::new().with_tools(ToolNamespaceConfig::new(ns, None, tool_descs));
+                            let dev_msg = Message::from_role_and_content(Role::Developer, dev);
+                            let mut new_msgs = Vec::<Message>::new();
+                            let mut inserted = false;
+                            for m in conversation.messages.iter() {
+                                if !inserted && m.author.role != Role::System && m.author.role != Role::Developer {
+                                    new_msgs.push(dev_msg.clone()); inserted = true;
+                                }
+                                new_msgs.push(m.clone());
+                            }
+                            if !inserted { new_msgs.push(dev_msg); }
+                            conversation.messages = new_msgs;
+                        }
+                    }
+                }
+            }
+        }
+
+        if config_owned.is_none() { config_owned = Some(RenderConversationConfig { auto_drop_analysis: true }); }
+
+        // Render next turn header and content prefix
+        let mut tokens: Vec<u32> = handle
+            .inner
+            .render_conversation_for_completion(&conversation, role, config_owned.as_ref())?
+            .into_iter()
+            .map(|t| t as u32)
+            .collect();
+        if let Some(o) = opts {
+            if o.force_next_channel_final {
+                handle.inner.render_formatting_token_into(FormattingToken::Channel, &mut tokens)
+                    .map_err(|e| FfiError::new(HarmonyStatus::InternalError, e.to_string()))?;
+                handle.inner.render_text_into("final", &mut tokens)
+                    .map_err(|e| FfiError::new(HarmonyStatus::InternalError, e.to_string()))?;
+                handle.inner.render_formatting_token_into(FormattingToken::Message, &mut tokens)
+                    .map_err(|e| FfiError::new(HarmonyStatus::InternalError, e.to_string()))?;
+            }
+        }
+
+        // Prime parser if provided
+        if !parser.is_null() {
+            let parser_handle = parser_from_ptr_mut(parser)?;
+            if let Some(o) = opts {
+                if o.force_next_channel_final {
+                    parser_handle.inner.prime_assistant_final()
+                        .map_err(|e| FfiError::new(HarmonyStatus::InternalError, e.to_string()))?;
+                }
+            }
+        }
+
         unsafe { *out_tokens = vec_to_u32_array(tokens) };
         Ok(())
     })
@@ -821,6 +944,7 @@ pub extern "C" fn harmony_encoding_render_system_and_user_for_completion_ex(
             .collect();
         if let Some(o) = opts {
             if o.force_next_channel_final {
+                // Append only the remaining header atoms: <|channel|>final<|message|>
                 handle
                     .inner
                     .render_formatting_token_into(FormattingToken::Channel, &mut tokens)
@@ -835,6 +959,149 @@ pub extern "C" fn harmony_encoding_render_system_and_user_for_completion_ex(
                     .map_err(|e| FfiError::new(HarmonyStatus::InternalError, e.to_string()))?;
             }
         }
+        unsafe { *out_tokens = vec_to_u32_array(tokens) };
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn harmony_encoding_render_system_and_user_for_completion_and_prime_ex(
+    encoding: *const HarmonyEncodingHandle,
+    system_text: *const c_char,
+    user_parts: *const HarmonyStringArray,
+    next_turn_role: *const c_char,
+    config: *const HarmonyRenderConversationConfig,
+    options: *const HarmonyCompletionOptions,
+    parser: *mut HarmonyStreamableParserHandle,
+    out_tokens: *mut HarmonyOwnedU32Array,
+    out_error: *mut *mut c_char,
+) -> HarmonyStatus {
+    if let Err(err) = ensure_out_ptr(out_tokens, "out_tokens") {
+        store_error(out_error, Some(err.message));
+        return err.status;
+    }
+    unsafe { (*out_tokens).data = ptr::null_mut(); (*out_tokens).len = 0; }
+
+    catch_unwind_result(out_error, || {
+        let handle = encoding_from_ptr(encoding)?;
+        let role_str = string_argument(next_turn_role, "next_turn_role")?;
+        let role = Role::try_from(role_str.as_str()).map_err(|_| {
+            FfiError::new(HarmonyStatus::InvalidArgument, format!("unknown role: {role_str}"))
+        })?;
+
+        // Build messages from inputs
+        let mut messages: Vec<Message> = Vec::new();
+        if !system_text.is_null() {
+            let sys_str = string_argument(system_text, "system_text")?;
+            messages.push(Message::from_role_and_content(Role::System, SystemContent::new()));
+            if !sys_str.is_empty() {
+                // Append instructions as developer content to avoid duplicating system semantics
+                let dev = DeveloperContent::new().with_instructions(sys_str);
+                messages.push(Message::from_role_and_content(Role::Developer, dev));
+            }
+        } else {
+            messages.push(Message::from_role_and_content(Role::System, SystemContent::new()));
+        }
+        if !user_parts.is_null() {
+            let arr = unsafe { &*user_parts };
+            if !arr.data.is_null() {
+                let slice = unsafe { std::slice::from_raw_parts(arr.data, arr.len) };
+                for p in slice {
+                    if !p.is_null() {
+                        let s = unsafe { CStr::from_ptr(*p) }.to_string_lossy().to_string();
+                        if !s.is_empty() {
+                            messages.push(Message::from_role_and_content(Role::User, s));
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut conversation = Conversation::from_messages(messages);
+        let mut config_owned = map_conversation_config(config);
+        let opts = unsafe { options.as_ref().copied() };
+        if let Some(o) = opts {
+            if o.final_only_deltas {
+                let dev_msg = Message::from_role_and_content(
+                    Role::Developer,
+                    DeveloperContent::new().with_instructions(
+                        "You are a helpful assistant. Produce exactly one assistant message in the final channel for the user. Do not reveal analysis or commentary to the user.",
+                    ),
+                );
+                let mut new_msgs = Vec::<Message>::new();
+                let mut inserted = false;
+                for m in conversation.messages.iter() {
+                    if !inserted && m.author.role != Role::System {
+                        new_msgs.push(dev_msg.clone());
+                        inserted = true;
+                    }
+                    new_msgs.push(m.clone());
+                }
+                if !inserted { new_msgs.push(dev_msg); }
+                conversation.messages = new_msgs;
+            }
+            if !o.tools_json.is_null() {
+                if let Ok(tools_str) = string_argument(o.tools_json, "tools_json") {
+                    if let Ok(root) = serde_json::from_str::<serde_json::Value>(&tools_str) {
+                        let ns = root.get("namespace").and_then(|v| v.as_str()).unwrap_or("functions").to_string();
+                        let mut tool_descs: Vec<ToolDescription> = Vec::new();
+                        if let Some(arr) = root.get("tools").and_then(|v| v.as_array()) {
+                            for t in arr {
+                                let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                                if name.is_empty() { continue; }
+                                let params = t.get("json_schema").cloned();
+                                let desc = t.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                tool_descs.push(ToolDescription::new(name, desc, params));
+                            }
+                        }
+                        if !tool_descs.is_empty() {
+                            let dev = DeveloperContent::new().with_tools(ToolNamespaceConfig::new(ns, None, tool_descs));
+                            let dev_msg = Message::from_role_and_content(Role::Developer, dev);
+                            let mut new_msgs = Vec::<Message>::new();
+                            let mut inserted = false;
+                            for m in conversation.messages.iter() {
+                                if !inserted && m.author.role != Role::System && m.author.role != Role::Developer {
+                                    new_msgs.push(dev_msg.clone()); inserted = true;
+                                }
+                                new_msgs.push(m.clone());
+                            }
+                            if !inserted { new_msgs.push(dev_msg); }
+                            conversation.messages = new_msgs;
+                        }
+                    }
+                }
+            }
+        }
+
+        if config_owned.is_none() { config_owned = Some(RenderConversationConfig { auto_drop_analysis: true }); }
+
+        let mut tokens: Vec<u32> = handle
+            .inner
+            .render_conversation_for_completion(&conversation, role, config_owned.as_ref())?
+            .into_iter()
+            .map(|t| t as u32)
+            .collect();
+        if let Some(o) = opts {
+            if o.force_next_channel_final {
+                handle.inner.render_formatting_token_into(FormattingToken::Channel, &mut tokens)
+                    .map_err(|e| FfiError::new(HarmonyStatus::InternalError, e.to_string()))?;
+                handle.inner.render_text_into("final", &mut tokens)
+                    .map_err(|e| FfiError::new(HarmonyStatus::InternalError, e.to_string()))?;
+                handle.inner.render_formatting_token_into(FormattingToken::Message, &mut tokens)
+                    .map_err(|e| FfiError::new(HarmonyStatus::InternalError, e.to_string()))?;
+            }
+        }
+
+        if !parser.is_null() {
+            let parser_handle = parser_from_ptr_mut(parser)?;
+            if let Some(o) = opts {
+                if o.force_next_channel_final {
+                    parser_handle.inner.prime_assistant_final()
+                        .map_err(|e| FfiError::new(HarmonyStatus::InternalError, e.to_string()))?;
+                }
+            }
+        }
+
         unsafe { *out_tokens = vec_to_u32_array(tokens) };
         Ok(())
     })
@@ -1669,7 +1936,8 @@ pub extern "C" fn harmony_streamable_parser_next_event(
         let parser_handle = parser_from_ptr_mut(parser)?;
         let channel = parser_handle.inner.current_channel();
         let recipient = parser_handle.inner.current_recipient();
-        let delta = parser_handle.inner.last_content_delta()?;
+        // Take and clear the last content delta so each delta is emitted once
+        let delta = parser_handle.inner.take_last_content_delta()?;
 
         // Tool begin: recipient changed from None/other -> Some
         if recipient.is_some() && recipient != parser_handle.last_recipient {
@@ -1733,28 +2001,10 @@ pub extern "C" fn harmony_streamable_parser_prime_assistant_final(
 ) -> HarmonyStatus {
     catch_unwind_result(out_error, || {
         let parser_handle = parser_from_ptr_mut(parser)?;
-        // Create a fresh encoding (same as parser's) to render formatting tokens
-        let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss)
+        parser_handle
+            .inner
+            .prime_assistant_final()
             .map_err(|e| FfiError::new(HarmonyStatus::InternalError, e.to_string()))?;
-        let mut toks: Vec<u32> = Vec::new();
-        encoding
-            .render_formatting_token_into(FormattingToken::Start, &mut toks)
-            .map_err(|e| FfiError::new(HarmonyStatus::InternalError, e.to_string()))?;
-        encoding
-            .render_text_into("assistant", &mut toks)
-            .map_err(|e| FfiError::new(HarmonyStatus::InternalError, e.to_string()))?;
-        // If the renderer added channel/message prefill, parser should accept content next.
-        // For safety we also prefill channel/message here so parser state matches tokens.
-        encoding
-            .render_formatting_token_into(FormattingToken::Channel, &mut toks)
-            .map_err(|e| FfiError::new(HarmonyStatus::InternalError, e.to_string()))?;
-        encoding
-            .render_text_into("final", &mut toks)
-            .map_err(|e| FfiError::new(HarmonyStatus::InternalError, e.to_string()))?;
-        encoding
-            .render_formatting_token_into(FormattingToken::Message, &mut toks)
-            .map_err(|e| FfiError::new(HarmonyStatus::InternalError, e.to_string()))?;
-        for t in toks { parser_handle.inner.process(t)?; }
         Ok(())
     })
 }

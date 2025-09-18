@@ -101,6 +101,18 @@ HarmonyStatus harmony_encoding_render_conversation_for_completion_ex(
     const HarmonyCompletionOptions *options,
     HarmonyOwnedU32Array *out_tokens,
     char **out_error);
+
+/** Extended variant that also primes a provided streamable parser so that its
+ *  internal state matches the returned prefill (typically assistant/final). */
+HarmonyStatus harmony_encoding_render_conversation_for_completion_and_prime_ex(
+    const HarmonyEncodingHandle *encoding,
+    const char *conversation_json,
+    const char *next_turn_role,
+    const HarmonyRenderConversationConfig *config,
+    const HarmonyCompletionOptions *options,
+    HarmonyStreamableParserHandle *parser, /* optional; may be NULL */
+    HarmonyOwnedU32Array *out_tokens,
+    char **out_error);
 HarmonyStatus harmony_encoding_render_conversation(
     const HarmonyEncodingHandle *encoding,
     const char *conversation_json,
@@ -128,6 +140,18 @@ HarmonyStatus harmony_encoding_render_system_and_user_for_completion_ex(
     const char *next_turn_role,              /** e.g., "assistant" */
     const HarmonyRenderConversationConfig *config,
     const HarmonyCompletionOptions *options,
+    HarmonyOwnedU32Array *out_tokens,
+    char **out_error);
+
+/** Convenience variant that also primes a provided streamable parser. */
+HarmonyStatus harmony_encoding_render_system_and_user_for_completion_and_prime_ex(
+    const HarmonyEncodingHandle *encoding,
+    const char *system_text,                 /** optional, may be NULL */
+    const HarmonyStringArray *user_parts,    /** array of UTF-8 strings */
+    const char *next_turn_role,              /** e.g., "assistant" */
+    const HarmonyRenderConversationConfig *config,
+    const HarmonyCompletionOptions *options,
+    HarmonyStreamableParserHandle *parser,   /** optional; may be NULL */
     HarmonyOwnedU32Array *out_tokens,
     char **out_error);
 
